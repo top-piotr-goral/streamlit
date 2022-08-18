@@ -1,38 +1,80 @@
-from collections import namedtuple
-import altair as alt
-import math
-import pandas as pd
 import streamlit as st
-
-"""
-# Welcome to Streamlit!
-
-Edit `/streamlit_app.py` to customize this app to your heart's desire :heart:
-
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
-
-In the meantime, below is an example of what you can do with just a few lines of code:
-"""
+import numpy as np
+import pandas as pd
+from matplotlib import pyplot as plt
 
 
-with st.echo(code_location='below'):
-    total_points = st.slider("Number of points in spiral", 1, 5000, 2000)
-    num_turns = st.slider("Number of turns in spiral", 1, 100, 9)
+df = pd.read_excel("3_with_dividends_groups.xlsx")
 
-    Point = namedtuple('Point', 'x y')
-    data = []
+ticker = st.selectbox("Ticker", df["Ticker"].drop_duplicates().tolist())
+st.write("You selected Ticker:", ticker)
 
-    points_per_turn = total_points / num_turns
+df_ticker = df[df["Ticker"] == ticker]
 
-    for curr_point_num in range(total_points):
-        curr_turn, i = divmod(curr_point_num, points_per_turn)
-        angle = (curr_turn + 1) * 2 * math.pi * i / points_per_turn
-        radius = curr_point_num / total_points
-        x = radius * math.cos(angle)
-        y = radius * math.sin(angle)
-        data.append(Point(x, y))
+window = st.slider("MA window", 1, 7, 4)
+st.write("You selected MA window:", window)
 
-    st.altair_chart(alt.Chart(pd.DataFrame(data), height=500, width=500)
-        .mark_circle(color='#0068c9', opacity=0.5)
-        .encode(x='x:Q', y='y:Q'))
+
+period = st.slider(
+    "Dividends period",
+    int(df_ticker["Dividends_group_from_Dividends_flag_shifted"].min()),
+    int(df_ticker["Dividends_group_from_Dividends_flag_shifted"].max()),
+    1,
+)
+st.write("You selected Dividens period:", period)
+
+
+df_ma_in_dividends_group = (
+    df.groupby(["Ticker", "Dividends_group_from_Dividends_flag_shifted"])["Close"]
+    .rolling(window=window)
+    .mean()
+    .reset_index()
+)
+df_ma_with_regular_close = df.copy()
+df_ma_with_regular_close[f"Close_MA_{window}"] = df_ma_in_dividends_group["Close"]
+df_ma_with_regular_close = df_ma_with_regular_close[
+    ~df_ma_with_regular_close[f"Close_MA_{window}"].isnull()
+]
+
+df_example = df_ma_with_regular_close[
+    (df_ma_with_regular_close["Ticker"] == ticker)
+    & (
+        df_ma_with_regular_close["Dividends_group_from_Dividends_flag_shifted"]
+        == period
+    )
+]
+df_example.reset_index(drop=True, inplace=True)
+
+smooth_d1 = np.gradient(df_example[f"Close_MA_{window}"])
+smooth_d2 = np.gradient(np.gradient(df_example[f"Close_MA_{window}"]))
+infls = np.where(np.diff(np.sign(smooth_d2)))[0]
+
+# plot results
+plt.rcParams["figure.figsize"] = (12, 5)
+fig, ax = plt.subplots(constrained_layout=True)
+
+
+ax.plot(df_example["Close"], label="Close")
+ax.plot(df_example[f"Close_MA_{window}"], label=f"Close_MA_{window}")
+
+ax.set_xlabel("Day")
+ax.set_ylabel("Close")
+
+# derivs
+ax2 = ax.twinx()
+ax2.plot(
+    smooth_d1, label=f"First Derivative from Close_MA_{window}", color="purple", ls="--"
+)
+ax2.plot(
+    smooth_d2, label=f"Second Derivative from Close_MA_{window}", color="red", ls="--"
+)
+
+ax2.set_ylabel("Derivative")
+
+lines = ax.get_lines() + ax2.get_lines()
+ax.legend(lines, [line.get_label() for line in lines], loc="upper left")
+
+for i, infl in enumerate(infls, 1):
+    ax2.axvline(x=infl + 1, color="k", label=f"Inflection Point")
+
+st.pyplot(fig)
